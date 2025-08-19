@@ -1,0 +1,98 @@
+---
+- name: Playbook to query ESPN NHL Schedule and add to Google Calendar with TV broadcast information
+  hosts: all
+  become: no
+  vars:
+    noreply_email: noreply@domain.com
+    my_email: foo@domain.com
+    ses_smtp_host: mail.domain.com
+    rescue_subject: ESPN schedule sync - job failure
+    homedir: /home/foo/ansible/caps
+    smtp_pass: mypassword
+    schedule_url: https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/teams/23/schedule #replace with URL for your sports team - this is NHL Washington Capitals
+    google_id: # get google id from sync-ics2gcal config / Google API Console
+    my_team: Washington Capitals #update with your team
+    # See how to configure sync-ics2gcal to create the service-account.json file here: https://pypi.org/project/sync_ics2gcal/
+  tasks:
+  - block:
+    - name: download schedule
+      shell: |
+        curl {{ schedule_url }} -o {{ homedir }}/output.json
+    - name: filter schedule for TV broadcasts
+      shell: |
+        cat output.json | jq '.events[] | {name: .name, date: .date, network: .competitions[].broadcasts[].media.shortName}' | jq -s '.' > {{ homedir }}/events.json
+      register: schedule
+    - name: group by schedule
+      shell: |
+        jq 'group_by(.name, .date) | map({ name: .[0].name, date: .[0].date, network: map(.network) | unique | sort | join(" | ") })' {{ homedir }}/events.json
+      register: schedule2
+    - set_fact:
+        events: "{{ schedule2.stdout }}"
+    # Convert to ICS file
+    - template:
+        dest: "{{ homedir }}/output.ics"
+        src: templates/output.ics.j2
+    - name: install gcal sync
+      shell: pipx install sync-ics2gcal
+      become: yes
+      become_user: foo
+    - name: 
+      copy:
+        dest: "{{ homedir }}/config.yml"
+        content: |
+          start_from: now
+          service_account: service-account.json
+          calendar:
+            google_id: {{ google_id }}@group.calendar.google.com
+            source: output.ics
+    - name: sync to calendar
+      shell: /home/foo/.local/bin/sync-ics2gcal
+      become: yes
+      become_user: foo
+    - name: group by network
+      shell: |
+        jq -r 'group_by(.network) | map({network: .[0].network, count: length}) | .[] | "\(.network): \(.count)"' {{ homedir }}/events.json
+      register: group_by_network
+    - name: convert to html
+      set_fact:
+        html_output: "{{ group_by_network.stdout | replace('\n', '<br>&nbsp;&nbsp;&nbsp;&nbsp;') }}"
+    - debug:
+        msg:
+          - "Total number of games (should be 82):  {{ events | length }}"
+          - "Games grouped by Network: "
+          - "{{ group_by_network.stdout }}"
+      ignore_errors: true
+    - name: send mail
+      mail:
+        host: "{{ ses_smtp_host }}"
+        username: root@domain.com
+        password: "{{ smtp_pass }}"
+        port: 587
+        secure: starttls
+        charset: utf8
+        subtype: html
+        from: "{{ noreply_email }}"
+        to: "{{ my_email }}"
+        subject: "Caps Schedule Updater results"
+        body: |
+          Total number of games (should be 82):  {{ events | length }}<br>
+          Games by Network: <br>
+          &nbsp;&nbsp;&nbsp;&nbsp;{{ html_output }} <br>
+      ignore_errors: true
+
+    rescue:
+      - name: send mail
+        mail:
+          host: "{{ ses_smtp_host }}"
+          username: root@domain.com
+          password: "{{ smtp_pass }}"
+          port: 587
+          secure: starttls
+          charset: utf8
+          subtype: html
+          from: "{{ noreply_email }}"
+          to: "{{ my_email }}"
+          subject: "{{ rescue_subject }}"
+          body: |
+            See details for job: {{ tower_job_id }}
+            Details:  {{ ansible_failed_result | to_nice_json | default(None) }}
