@@ -1,0 +1,18 @@
+BEGIN:VCALENDAR
+PRODID:-//{{my_team}}//schedule//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+X-WR-CALNAME:{{my_team}} Schedule
+X-WR-TIMEZONE:(GMT-05:00) Eastern Time (US & Canada)
+{% for item in events %}
+BEGIN:VEVENT
+DTSTART: {{ (item.date | to_datetime('%Y-%m-%dT%H:%MZ')).strftime('%Y%m%dT%H%M%SZ') }}
+DURATION: P2H
+DESCRIPTION: {{ item.name }} | {{ item.network }}
+SEQUENCE:{{ loop.index }}
+STATUS:CONFIRMED
+SUMMARY: {{ item.name }} | {{ item.network }}
+END:VEVENT
+{% endfor %}
+END:VCALENDAR
